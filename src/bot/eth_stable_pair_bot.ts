@@ -512,7 +512,8 @@ export class EthStablePairBotService {
         tickUpper:
           nearestUsableTick(state.tick, immutables.tickSpacing) +
           immutables.tickSpacing * this.options.RANGE_TICKS,
-        // TODO: how do i get proper liquidity?
+        // since liquidity is unknown, it will be set inside the
+        // routeToRatio call
         liquidity: 1,
       }),
       {
@@ -522,6 +523,7 @@ export class EthStablePairBotService {
       {
         swapOptions: {
           recipient: address(this.getWallet()),
+          // 0.5% slippage
           slippageTolerance: new Percent(5, 1000),
           deadline: 200,
         },
