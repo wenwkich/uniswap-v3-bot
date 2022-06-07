@@ -101,6 +101,53 @@ export class EthStablePairBotService {
     } else {
       this.lastProcessedTime = moment(0);
     }
+
+    // initialize other params
+    this.poolContract = new ethers.Contract(
+      this.options.POOL_ADDRESS,
+      uniPoolAbi,
+      this.getWallet()
+    );
+    this.nonFungiblePositionManager = new ethers.Contract(
+      ADDRESSES[this.getNetwork()].NonfungiblePositionManager,
+      nonFungiblePositionManagerAbi,
+      this.getWallet()
+    );
+
+    if (this.options.BASE_TOKEN === 0) {
+      this.quoteAssetContract = new ethers.Contract(
+        this.poolContract.token1(),
+        erc20ABI,
+        this.getWallet()
+      );
+    } else {
+      this.quoteAssetContract = new ethers.Contract(
+        this.poolContract.token0(),
+        erc20ABI,
+        this.getWallet()
+      );
+    }
+    this.quoteAssetDecimals = await this.quoteAssetContract.decimals();
+    if (this.options.BASE_TOKEN === 0) {
+      this.baseAssetContract = new ethers.Contract(
+        this.poolContract.token0(),
+        erc20ABI,
+        this.getWallet()
+      );
+    } else {
+      this.baseAssetContract = new ethers.Contract(
+        this.poolContract.token1(),
+        erc20ABI,
+        this.getWallet()
+      );
+    }
+    this.baseAssetDecimals = await this.baseAssetContract.decimals();
+    this.stablecoinContract = new ethers.Contract(
+      ADDRESSES[this.getNetwork()].USDC,
+      erc20ABI,
+      this.getWallet()
+    );
+    this.stablecoinDecimals = await this.stablecoinContract.decimals();
   }
 
   async start(): Promise<void> {
@@ -203,7 +250,7 @@ export class EthStablePairBotService {
 
   async getPosition(nftId: number): Promise<Position | undefined> {
     const nonFungiblePositionManager = this.getNonFungiblePositionManager();
-    const positionRaw = nonFungiblePositionManager.positions(nftId);
+    const positionRaw = await nonFungiblePositionManager.positions(nftId);
 
     const tickLower = positionRaw[5];
     const tickUpper = positionRaw[6];
@@ -217,14 +264,14 @@ export class EthStablePairBotService {
     const TOKEN0 = new Token(
       1,
       address(this.getBaseAssetContract()),
-      await this.getBaseAssetDecimals(),
+      this.getBaseAssetDecimals(),
       "TOKEN0",
       "BASE"
     );
     const TOKEN1 = new Token(
       1,
       address(this.getQuoteAssetContract()),
-      await this.getQuoteAssetDecimals(),
+      this.getQuoteAssetDecimals(),
       "TOKEN1",
       "QUOTE"
     );
@@ -250,7 +297,7 @@ export class EthStablePairBotService {
    * get last position
    */
   async getLastPosition(): Promise<Position | undefined> {
-    const logs = await this.getWallet().provider.getLogs({
+    const logs = await this.getProvider().getLogs({
       address: ADDRESSES[this.getNetwork()].NonfungiblePositionManager,
       topics: [
         utils.id("Transfer(address,address,uint256)"),
@@ -292,7 +339,7 @@ export class EthStablePairBotService {
       await this.attemptToSwapAll(
         this.getBaseAssetContract(),
         this.getQuoteAssetContract(),
-        await this.getBaseAssetDecimals(),
+        this.getBaseAssetDecimals(),
         0,
         await this.getBaseAssetPriceUsd()
       );
@@ -308,7 +355,7 @@ export class EthStablePairBotService {
       await this.attemptToSwapAll(
         this.getQuoteAssetContract(),
         this.getStablecoinContract(),
-        await this.getQuoteAssetDecimals(),
+        this.getQuoteAssetDecimals(),
         0,
         await this.getQuoteAssetPriceUsd()
       );
@@ -325,14 +372,14 @@ export class EthStablePairBotService {
     const TOKEN0 = new Token(
       1,
       address(this.getBaseAssetContract()),
-      await this.getBaseAssetDecimals(),
+      this.getBaseAssetDecimals(),
       "TOKEN0",
       "BASE"
     );
     const TOKEN1 = new Token(
       1,
       address(this.getQuoteAssetContract()),
-      await this.getQuoteAssetDecimals(),
+      this.getQuoteAssetDecimals(),
       "TOKEN1",
       "QUOTE"
     );
@@ -424,14 +471,14 @@ export class EthStablePairBotService {
     const TOKEN0 = new Token(
       1,
       address(this.getBaseAssetContract()),
-      await this.getBaseAssetDecimals(),
+      this.getBaseAssetDecimals(),
       "TOKEN0",
       "BASE"
     );
     const TOKEN1 = new Token(
       1,
       address(this.getQuoteAssetContract()),
-      await this.getQuoteAssetDecimals(),
+      this.getQuoteAssetDecimals(),
       "TOKEN1",
       "QUOTE"
     );
@@ -499,97 +546,34 @@ export class EthStablePairBotService {
   }
 
   getPoolContract(): ethers.Contract {
-    if (this.poolContract) return this.poolContract;
-    this.poolContract = new ethers.Contract(
-      this.options.POOL_ADDRESS,
-      // TODO: add uni pool abi
-      uniPoolAbi,
-      this.getWallet()
-    );
     return this.poolContract;
   }
 
   getNonFungiblePositionManager(): ethers.Contract {
-    if (this.nonFungiblePositionManager) return this.nonFungiblePositionManager;
-    this.nonFungiblePositionManager = new ethers.Contract(
-      ADDRESSES[this.getNetwork()].NonfungiblePositionManager,
-      nonFungiblePositionManagerAbi,
-      this.getWallet()
-    );
     return this.nonFungiblePositionManager;
   }
 
   getQuoteAssetContract(): ethers.Contract {
-    if (this.quoteAssetContract) return this.quoteAssetContract;
-    const poolContract = this.getPoolContract();
-
-    if (this.options.BASE_TOKEN === 0) {
-      this.quoteAssetContract = new ethers.Contract(
-        poolContract.token1(),
-        erc20ABI,
-        this.getWallet()
-      );
-    } else {
-      this.quoteAssetContract = new ethers.Contract(
-        poolContract.token0(),
-        erc20ABI,
-        this.getWallet()
-      );
-    }
     return this.quoteAssetContract;
   }
 
-  async getQuoteAssetDecimals(): Promise<number> {
-    if (this.quoteAssetDecimals !== undefined)
-      return Promise.resolve(this.quoteAssetDecimals);
-    const quoteAssetContract = this.getQuoteAssetContract();
-    this.quoteAssetDecimals = await quoteAssetContract.decimals();
+  getQuoteAssetDecimals(): number {
     return this.quoteAssetDecimals;
   }
 
   getBaseAssetContract(): ethers.Contract {
-    if (this.baseAssetContract) return this.baseAssetContract;
-    const poolContract = this.getPoolContract();
-
-    if (this.options.BASE_TOKEN === 0) {
-      this.baseAssetContract = new ethers.Contract(
-        poolContract.token0(),
-        erc20ABI,
-        this.getWallet()
-      );
-    } else {
-      this.baseAssetContract = new ethers.Contract(
-        poolContract.token1(),
-        erc20ABI,
-        this.getWallet()
-      );
-    }
     return this.baseAssetContract;
   }
 
-  async getBaseAssetDecimals(): Promise<number> {
-    if (this.baseAssetDecimals !== undefined)
-      return Promise.resolve(this.baseAssetDecimals);
-    const baseAssetContract = this.getBaseAssetContract();
-    this.baseAssetDecimals = await baseAssetContract.decimals();
+  getBaseAssetDecimals(): number {
     return this.baseAssetDecimals;
   }
 
   getStablecoinContract(): ethers.Contract {
-    if (this.stablecoinContract) return this.stablecoinContract;
-    this.stablecoinContract = new ethers.Contract(
-      ADDRESSES[this.getNetwork()].USDC,
-      erc20ABI,
-      this.getWallet()
-    );
     return this.stablecoinContract;
   }
 
-  async getStablecoinDecimals(): Promise<number> {
-    if (this.stablecoinDecimals !== undefined)
-      return Promise.resolve(this.stablecoinDecimals);
-    const stablecoinContract = this.getStablecoinContract();
-    this.stablecoinDecimals = await stablecoinContract.decimals();
+  getStablecoinDecimals(): number {
     return this.stablecoinDecimals;
   }
 
@@ -605,7 +589,8 @@ export class EthStablePairBotService {
   }
 
   async getBaseAssetPriceUsd(): Promise<number> {
-    return Promise.resolve(1);
+    // hard code to 1
+    return 1;
   }
 
   async getGasPrice(): Promise<BigNumber> {
@@ -618,6 +603,10 @@ export class EthStablePairBotService {
 
   getWallet() {
     return this.wallet;
+  }
+
+  getProvider() {
+    return this.provider;
   }
 
   getLogger() {
