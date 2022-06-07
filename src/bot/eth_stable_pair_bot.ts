@@ -1,4 +1,4 @@
-import { BigNumber, ethers, utils, Wallet } from "ethers";
+import { BigNumber, ethers, providers, utils, Wallet } from "ethers";
 import moment, { Moment } from "moment";
 import { Inject, Service } from "typedi";
 import {
@@ -15,9 +15,9 @@ import { BotServiceOptions } from "../common/interfaces";
 import { erc20ABI } from "wagmi";
 import COINGECKO_IDS from "../common/coingecko_ids.json";
 import ADDRESSES from "../common/addresses.json";
+import { NETWORKS } from "../common/network";
 import _ from "lodash";
 import { formatUnits, hexZeroPad, parseUnits } from "ethers/lib/utils";
-import { PROVIDER_URLS } from "../common/provider";
 import { abi as uniPoolAbi } from "@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json";
 import { abi as nonFungiblePositionManagerAbi } from "@uniswap/v3-periphery/artifacts/contracts/interfaces/INonfungiblePositionManager.sol/INonfungiblePositionManager.json";
 import {
@@ -26,7 +26,13 @@ import {
   Pool,
   Position,
 } from "@uniswap/v3-sdk";
-import { CurrencyAmount, Fraction, Percent, Token } from "@uniswap/sdk-core";
+import {
+  CurrencyAmount,
+  Fraction,
+  Percent,
+  Token,
+  TradeType,
+} from "@uniswap/sdk-core";
 import { AlphaRouter, SwapToRatioStatus } from "@uniswap/smart-order-router";
 import axios from "axios";
 
@@ -61,9 +67,9 @@ export class EthStablePairBotService {
   private nonFungiblePositionManager: ethers.Contract;
 
   private quoteAssetContract: ethers.Contract;
-  private quoteAssetDecimals: number;
+  private quoteAssetToken: Token;
   private baseAssetContract: ethers.Contract;
-  private baseAssetDecimals: number;
+  private baseAssetToken: Token;
   private stablecoinContract: ethers.Contract;
   private stablecoinDecimals: number;
 
@@ -78,12 +84,12 @@ export class EthStablePairBotService {
       throw Error("no PRIVATE_KEY is provided");
     }
 
-    if (!PROVIDER_URLS[this.getNetwork()]) {
+    if (!NETWORKS[this.getNetwork()]) {
       throw Error("no XXX_PROVIDER_URL is provided");
     }
     this.provider = new ethers.providers.JsonRpcProvider(
-      PROVIDER_URLS[this.getNetwork()].url,
-      PROVIDER_URLS[this.getNetwork()].chainId
+      this.getProviderUrl(),
+      this.getChainId()
     );
     this.wallet = new Wallet(privKey, this.provider);
     this.options = options;
@@ -120,28 +126,38 @@ export class EthStablePairBotService {
         erc20ABI,
         this.getWallet()
       );
+      this.baseAssetContract = new ethers.Contract(
+        this.poolContract.token0(),
+        erc20ABI,
+        this.getWallet()
+      );
     } else {
       this.quoteAssetContract = new ethers.Contract(
         this.poolContract.token0(),
         erc20ABI,
         this.getWallet()
       );
-    }
-    this.quoteAssetDecimals = await this.quoteAssetContract.decimals();
-    if (this.options.BASE_TOKEN === 0) {
-      this.baseAssetContract = new ethers.Contract(
-        this.poolContract.token0(),
-        erc20ABI,
-        this.getWallet()
-      );
-    } else {
       this.baseAssetContract = new ethers.Contract(
         this.poolContract.token1(),
         erc20ABI,
         this.getWallet()
       );
     }
-    this.baseAssetDecimals = await this.baseAssetContract.decimals();
+    this.quoteAssetToken = new Token(
+      this.getChainId(),
+      address(this.quoteAssetContract),
+      await this.quoteAssetContract.decimals(),
+      await this.quoteAssetContract.name(),
+      await this.quoteAssetContract.symbol()
+    );
+    this.baseAssetToken = new Token(
+      this.getChainId(),
+      address(this.baseAssetContract),
+      await this.baseAssetContract.decimals(),
+      await this.baseAssetContract.name(),
+      await this.baseAssetContract.symbol()
+    );
+
     this.stablecoinContract = new ethers.Contract(
       ADDRESSES[this.getNetwork()].USDC,
       erc20ABI,
@@ -261,24 +277,12 @@ export class EthStablePairBotService {
     const immutables = await this.getPoolImmutables();
     const state = await this.getPoolState();
 
-    const TOKEN0 = new Token(
-      1,
-      address(this.getBaseAssetContract()),
-      this.getBaseAssetDecimals(),
-      "TOKEN0",
-      "BASE"
-    );
-    const TOKEN1 = new Token(
-      1,
-      address(this.getQuoteAssetContract()),
-      this.getQuoteAssetDecimals(),
-      "TOKEN1",
-      "QUOTE"
-    );
+    const BASE = this.getBaseAssetToken();
+    const QUOTE = this.getQuoteAssetToken();
 
     const POOL = new Pool(
-      TOKEN0,
-      TOKEN1,
+      BASE,
+      QUOTE,
       immutables.fee,
       state.sqrtPriceX96.toString(),
       state.liquidity.toString(),
@@ -369,20 +373,8 @@ export class EthStablePairBotService {
   }
 
   async exitPosition(position: Position) {
-    const TOKEN0 = new Token(
-      1,
-      address(this.getBaseAssetContract()),
-      this.getBaseAssetDecimals(),
-      "TOKEN0",
-      "BASE"
-    );
-    const TOKEN1 = new Token(
-      1,
-      address(this.getQuoteAssetContract()),
-      this.getQuoteAssetDecimals(),
-      "TOKEN1",
-      "QUOTE"
-    );
+    const BASE = this.getBaseAssetToken();
+    const QUOTE = this.getQuoteAssetToken();
 
     const { calldata, value } = NonfungiblePositionManager.removeCallParameters(
       position,
@@ -398,12 +390,13 @@ export class EthStablePairBotService {
           ).timestamp + 200,
         collectOptions: {
           // TODO: check if this should be 0
-          expectedCurrencyOwed0: CurrencyAmount.fromRawAmount(TOKEN0, 0),
-          expectedCurrencyOwed1: CurrencyAmount.fromRawAmount(TOKEN1, 0),
+          expectedCurrencyOwed0: CurrencyAmount.fromRawAmount(BASE, "0"),
+          expectedCurrencyOwed1: CurrencyAmount.fromRawAmount(QUOTE, "0"),
           recipient: address(this.getWallet()),
         },
       }
     );
+
     this.getWallet().sendTransaction({
       to: address(this.getNonFungiblePositionManager()),
       from: address(this.getWallet()),
@@ -435,20 +428,60 @@ export class EthStablePairBotService {
         parseUnits("" + getAssetAmount(limitUsd, priceUsd), fromAssetDecimals)
       )
     ) {
-      await this.swapTo(
-        address(fromAssetContract),
-        address(toAssetContract),
-        balanceFrom
-      );
+      await this.swapTo(fromAssetContract, toAssetContract, balanceFrom);
     }
   }
 
   async swapTo(
-    fromAssetAddress: string,
-    toAssetAddress: string,
+    fromAssetContract: ethers.Contract,
+    toAssetContract: ethers.Contract,
     amountFrom: BigNumber
   ) {
-    // TODO:
+    const router = new AlphaRouter({
+      chainId: 1,
+      provider: this.getProvider(),
+    });
+
+    const fromAssetToken = new Token(
+      this.getChainId(),
+      address(fromAssetContract),
+      await fromAssetContract.decimals(),
+      await fromAssetContract.name(),
+      await fromAssetContract.symbol()
+    );
+
+    const toAssetToken = new Token(
+      this.getChainId(),
+      address(toAssetContract),
+      await toAssetContract.decimals(),
+      await toAssetContract.name(),
+      await toAssetContract.symbol()
+    );
+
+    const route = await router.route(
+      CurrencyAmount.fromRawAmount(fromAssetToken, amountFrom.toString()),
+      toAssetToken,
+      TradeType.EXACT_INPUT,
+      {
+        recipient: address(this.getWallet()),
+        slippageTolerance: new Percent(5, 1000),
+        deadline: Math.floor(Date.now() / 1000 + 1800),
+      }
+    );
+
+    if (route !== null) {
+      const transaction = {
+        data: route.methodParameters?.calldata,
+        to: ADDRESSES[this.getNetwork()].SwapRouter02,
+        value: BigNumber.from(route.methodParameters?.value),
+        from: address(this.getWallet()),
+        gasPrice: BigNumber.from(route.gasPriceWei),
+      };
+
+      await this.getWallet().sendTransaction(transaction);
+    } else {
+      throw new Error("Failed to execute alpha router call");
+    }
   }
 
   async repayLoan(amount: BigNumber) {
@@ -468,28 +501,19 @@ export class EthStablePairBotService {
       this.getWallet()
     );
 
-    const TOKEN0 = new Token(
-      1,
-      address(this.getBaseAssetContract()),
-      this.getBaseAssetDecimals(),
-      "TOKEN0",
-      "BASE"
-    );
-    const TOKEN1 = new Token(
-      1,
-      address(this.getQuoteAssetContract()),
-      this.getQuoteAssetDecimals(),
-      "TOKEN1",
-      "QUOTE"
-    );
+    const BASE = this.getBaseAssetToken();
+    const QUOTE = this.getQuoteAssetToken();
 
-    const token0Balance = CurrencyAmount.fromRawAmount(TOKEN0, "0");
-    const token1Balance = CurrencyAmount.fromRawAmount(TOKEN1, balanceFrom);
+    const token0Balance = CurrencyAmount.fromRawAmount(BASE, "0");
+    const token1Balance = CurrencyAmount.fromRawAmount(
+      QUOTE,
+      balanceFrom.toString()
+    );
     const immutables = await this.getPoolImmutables();
     const state = await this.getPoolState();
     const pool = new Pool(
-      TOKEN0,
-      TOKEN1,
+      BASE,
+      QUOTE,
       immutables.fee,
       state.sqrtPriceX96.toString(),
       state.liquidity.toString(),
@@ -497,8 +521,8 @@ export class EthStablePairBotService {
     );
 
     const router = new AlphaRouter({
-      chainId: PROVIDER_URLS[this.getNetwork()].chainId,
-      provider: this.provider,
+      chainId: this.getChainId(),
+      provider: this.getProvider(),
     });
 
     const routeToRatioResponse = await router.routeToRatio(
@@ -512,8 +536,8 @@ export class EthStablePairBotService {
         tickUpper:
           nearestUsableTick(state.tick, immutables.tickSpacing) +
           immutables.tickSpacing * this.options.RANGE_TICKS,
-        // since liquidity is unknown, it will be set inside the
-        // routeToRatio call
+        // since liquidity is unknown,
+        // it will be set inside the routeToRatio call
         liquidity: 1,
       }),
       {
@@ -544,6 +568,11 @@ export class EthStablePairBotService {
       };
 
       await this.getWallet().sendTransaction(transaction);
+    } else {
+      throw new Error(
+        "Failed to execute alpha router call, status: " +
+          routeToRatioResponse.status
+      );
     }
   }
 
@@ -560,7 +589,11 @@ export class EthStablePairBotService {
   }
 
   getQuoteAssetDecimals(): number {
-    return this.quoteAssetDecimals;
+    return this.quoteAssetToken.decimals;
+  }
+
+  getQuoteAssetToken(): Token {
+    return this.baseAssetToken;
   }
 
   getBaseAssetContract(): ethers.Contract {
@@ -568,7 +601,11 @@ export class EthStablePairBotService {
   }
 
   getBaseAssetDecimals(): number {
-    return this.baseAssetDecimals;
+    return this.baseAssetToken.decimals;
+  }
+
+  getBaseAssetToken(): Token {
+    return this.baseAssetToken;
   }
 
   getStablecoinContract(): ethers.Contract {
@@ -609,6 +646,14 @@ export class EthStablePairBotService {
 
   getProvider() {
     return this.provider;
+  }
+
+  getChainId() {
+    return NETWORKS[this.getNetwork()].chainId;
+  }
+
+  getProviderUrl() {
+    return NETWORKS[this.getNetwork()].url;
   }
 
   getLogger() {

@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-export const PROVIDER_URLS = {
+export const NETWORKS = {
   ethereum: {
     url: process.env.ETHEREUM_PROVIDER_URL,
     chainId: 1,
