@@ -10,8 +10,6 @@ export interface BotServiceOptions {
   NETWORK: Network;
   // the tick range of the range provided
   RANGE_TICKS: number;
-  // the tick range of rebalance trigger
-  REBALANCE_TICKS: number;
   // max gas price, if target is hit, then set no gas price
   MAX_GAS_PRICE_GWEI: number;
   // will borrow more ETH if the price of ETH is down, hedging only

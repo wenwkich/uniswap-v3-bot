@@ -465,17 +465,8 @@ export class EthStablePairBotService {
    * @returns
    */
   async checkOutOfRange(position: Position): Promise<boolean> {
-    const immutables = await this.getPoolImmutables();
     const state = await this.getPoolState();
-
-    const lowerRange =
-      nearestUsableTick(state.tick, immutables.tickSpacing) -
-      immutables.tickSpacing * this.options.REBALANCE_TICKS;
-    const higherRange =
-      nearestUsableTick(state.tick, immutables.tickSpacing) +
-      immutables.tickSpacing * this.options.REBALANCE_TICKS;
-
-    return position.tickLower < lowerRange || position.tickUpper > higherRange;
+    return position.tickLower > state.tick || position.tickUpper < state.tick;
   }
 
   /**
