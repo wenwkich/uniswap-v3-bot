@@ -15,9 +15,9 @@ export interface BotServiceOptions {
   // max gas price, if target is hit, then set no gas price
   MAX_GAS_PRICE_GWEI: number;
   // will borrow more ETH if the price of ETH is down, hedging only
-  MIN_LTV_RATIO?: number;
+  MIN_LTV_RATIO: number;
   // will rebalance down if the max LTV is hit, hedging only
-  MAX_LTV_RATIO?: number;
+  MAX_LTV_RATIO: number;
   // avoid too frequent rebalance
   MIN_REBALANCE_HOUR: number;
   // base token is token0 or token1
@@ -32,4 +32,8 @@ export interface BotServiceOptions {
   ACCUMULATE_QUOTE_FEE_USD: number;
   // accumulate profit collect to USD
   ACCUMULATE_BASE_PROFIT_TO_USD: number;
+  // collateral token name in the lending pool
+  COLLATERAL_TOKEN: "quote" | "base" | "stable";
+  // lending token name in the lending pool
+  LENDING_TOKEN: "quote" | "base" | "stable";
 }

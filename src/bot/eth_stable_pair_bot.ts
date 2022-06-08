@@ -5,6 +5,7 @@ import {
   address,
   balanceOf,
   getAssetAmount,
+  getAssetAmountBn,
   parseGwei,
   sleep,
 } from "../common/utils";
@@ -21,6 +22,7 @@ import { formatUnits, hexZeroPad, parseUnits } from "ethers/lib/utils";
 import { abi as uniPoolAbi } from "@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json";
 import { abi as nonFungiblePositionManagerAbi } from "@uniswap/v3-periphery/artifacts/contracts/interfaces/INonfungiblePositionManager.sol/INonfungiblePositionManager.json";
 import { abi as aavePoolAbi } from "@aave/core-v3/artifacts/contracts/interfaces/IPool.sol/IPool.json";
+import { abi as aaveOracleAbi } from "@aave/core-v3/artifacts/contracts/interfaces/IAaveOracle.sol/IAaveOracle.json";
 import {
   nearestUsableTick,
   NonfungiblePositionManager,
@@ -62,6 +64,15 @@ interface PositionWithNftId {
   nftId?: number;
 }
 
+interface UserAccount {
+  totalCollateralBase: BigNumber;
+  totalDebtBase: BigNumber;
+  availableBorrowsBase: BigNumber;
+  currentLiquidationThreshold: BigNumber;
+  ltv: BigNumber;
+  healthFactor: BigNumber;
+}
+
 @Service()
 export class EthStablePairBotService {
   private provider: ethers.providers.BaseProvider;
@@ -72,13 +83,12 @@ export class EthStablePairBotService {
   private poolContract: ethers.Contract;
   private nonFungiblePositionManager: ethers.Contract;
   private aavePoolContract: ethers.Contract;
+  private aaveOracleContract: ethers.Contract;
 
   private quoteAssetContract: ethers.Contract;
   private quoteAssetToken: Token;
   private baseAssetContract: ethers.Contract;
   private baseAssetToken: Token;
-  private stablecoinContract: ethers.Contract;
-  private stablecoinDecimals: number;
 
   private immutables: Immutables;
 
@@ -131,6 +141,11 @@ export class EthStablePairBotService {
       aavePoolAbi,
       this.getWallet()
     );
+    this.aaveOracleContract = new ethers.Contract(
+      ADDRESSES[this.getNetwork()].AaveOracle,
+      aaveOracleAbi,
+      this.getWallet()
+    );
 
     if (this.options.BASE_TOKEN === 0) {
       this.quoteAssetContract = new ethers.Contract(
@@ -169,13 +184,6 @@ export class EthStablePairBotService {
       await this.baseAssetContract.name(),
       await this.baseAssetContract.symbol()
     );
-
-    this.stablecoinContract = new ethers.Contract(
-      ADDRESSES[this.getNetwork()].USDC,
-      erc20ABI,
-      this.getWallet()
-    );
-    this.stablecoinDecimals = await this.stablecoinContract.decimals();
   }
 
   async start(): Promise<void> {
@@ -252,16 +260,12 @@ export class EthStablePairBotService {
       );
 
       // repay loan
-      const balanceBase = await balanceOf(
-        this.getBaseAssetContract(),
-        this.getWallet()
-      );
-      await this.repayLoan(balanceBase);
+      await this.repayLoan();
 
       // swap remaining profit to stablecoin
       await this.attemptToSwapAll(
         this.getQuoteAssetContract(),
-        this.getStablecoinContract(),
+        this.getCollateralAssetContract(),
         this.getQuoteAssetDecimals(),
         0,
         await this.getQuoteAssetPriceUsd()
@@ -277,20 +281,38 @@ export class EthStablePairBotService {
 
   /********* STATUS CHECK RELATED FUNCTION *********/
 
+  async getUserAccountData(): Promise<UserAccount> {
+    const aavePool = this.getAavePoolContract();
+    const data = await aavePool.getUserAccountData(address(this.getWallet()));
+    return {
+      totalCollateralBase: data[0],
+      totalDebtBase: data[1],
+      availableBorrowsBase: data[2],
+      currentLiquidationThreshold: data[3],
+      ltv: data[4],
+      healthFactor: data[5],
+    };
+  }
+
+  async getAssetPriceFromAaveOracle(assetAddress: string): Promise<BigNumber> {
+    const aaveOracle = this.getAaveOracleContract();
+    return aaveOracle.getAssetPrice(assetAddress);
+  }
+
   /**
    * check if current LTV ratio is under minimum
    */
   async checkLTVBelowMinimum(): Promise<boolean> {
-    // TODO:
-    return Promise.resolve(false);
+    const { ltv } = await this.getUserAccountData();
+    return ltv.toNumber() / 100 < this.options.MIN_LTV_RATIO;
   }
 
   /**
    * check if current LTV ratio is under maximum
    */
   async checkLTVAboveMaximum(): Promise<boolean> {
-    // TODO:
-    return Promise.resolve(false);
+    const { ltv } = await this.getUserAccountData();
+    return ltv.toNumber() / 100 > this.options.MAX_LTV_RATIO;
   }
 
   async getPoolImmutables() {
@@ -424,7 +446,9 @@ export class EthStablePairBotService {
             )
           ).timestamp + 200,
         collectOptions: {
-          // TODO: check if this should be 0
+          // since we are not dealing with native token,
+          // it should be safe here to set the expected
+          // amount to 0
           expectedCurrencyOwed0: CurrencyAmount.fromRawAmount(BASE, "0"),
           expectedCurrencyOwed1: CurrencyAmount.fromRawAmount(QUOTE, "0"),
           recipient: address(this.getWallet()),
@@ -608,14 +632,58 @@ export class EthStablePairBotService {
   }
 
   /********* AAVE RELATED FUNCTION *********/
-  async repayLoan(amount: BigNumber) {
-    // TODO:
+  async repayLoan() {
+    const aavePool = await this.getAavePoolContract();
+
+    const balanceBase = await balanceOf(
+      this.getLendingAssetContract(),
+      this.getWallet()
+    );
+
+    await aavePool.repay(
+      // asset address
+      address(this.getLendingAssetContract()),
+      balanceBase,
+      // interest mode, using variable one
+      2,
+      address(this.getWallet())
+    );
   }
 
   async openNewLoan() {
-    // TODO:
+    const aavePool = await this.getAavePoolContract();
+
     // if there is new USDC, deposit
-    // open a new loan and adjust to ratio
+    const balanceCollateral = await balanceOf(
+      this.getCollateralAssetContract(),
+      this.getWallet()
+    );
+
+    if (balanceCollateral.gt(0)) {
+      await aavePool.supply(
+        address(this.getCollateralAssetContract()),
+        balanceCollateral,
+        address(this.getWallet()),
+        0
+      );
+    }
+
+    // open a new loan
+    const { availableBorrowsBase } = await this.getUserAccountData();
+    const loanAmount = getAssetAmountBn(
+      availableBorrowsBase,
+      await this.getAssetPriceFromAaveOracle(
+        address(this.getLendingAssetContract())
+      )
+    );
+    await aavePool.borrow(
+      address(this.getLendingAssetContract()),
+      parseUnits(loanAmount.toString(), this.getLendingAssetDecimals()),
+      // variable mode
+      2,
+      0,
+      address(this.getWallet())
+    );
   }
 
   getPoolContract(): ethers.Contract {
@@ -628,6 +696,10 @@ export class EthStablePairBotService {
 
   getAavePoolContract(): ethers.Contract {
     return this.aavePoolContract;
+  }
+
+  getAaveOracleContract(): ethers.Contract {
+    return this.aaveOracleContract;
   }
 
   getQuoteAssetContract(): ethers.Contract {
@@ -654,12 +726,58 @@ export class EthStablePairBotService {
     return this.baseAssetToken;
   }
 
-  getStablecoinContract(): ethers.Contract {
-    return this.stablecoinContract;
+  getLendingAssetContract(): ethers.Contract {
+    if (this.options.LENDING_TOKEN === "base") {
+      return this.getBaseAssetContract();
+    } else if (this.options.LENDING_TOKEN === "quote") {
+      return this.getQuoteAssetContract();
+    }
+    throw new Error("Other type of asset are not implemented");
   }
 
-  getStablecoinDecimals(): number {
-    return this.stablecoinDecimals;
+  getCollateralAssetContract(): ethers.Contract {
+    if (this.options.COLLATERAL_TOKEN === "base") {
+      return this.getBaseAssetContract();
+    } else if (this.options.LENDING_TOKEN === "quote") {
+      return this.getQuoteAssetContract();
+    }
+    throw new Error("Other type of asset are not implemented");
+  }
+
+  getLendingAssetDecimals(): number {
+    if (this.options.LENDING_TOKEN === "base") {
+      return this.getBaseAssetDecimals();
+    } else if (this.options.LENDING_TOKEN === "quote") {
+      return this.getQuoteAssetDecimals();
+    }
+    throw new Error("Other type of asset are not implemented");
+  }
+
+  getCollateralAssetDecimals(): number {
+    if (this.options.COLLATERAL_TOKEN === "base") {
+      return this.getBaseAssetDecimals();
+    } else if (this.options.LENDING_TOKEN === "quote") {
+      return this.getQuoteAssetDecimals();
+    }
+    throw new Error("Other type of asset are not implemented");
+  }
+
+  async getLendingAssetPriceUsd(): Promise<number> {
+    if (this.options.LENDING_TOKEN === "base") {
+      return this.getBaseAssetPriceUsd();
+    } else if (this.options.LENDING_TOKEN === "quote") {
+      return this.getQuoteAssetPriceUsd();
+    }
+    throw new Error("Other type of asset are not implemented");
+  }
+
+  async getCollateralAssetPriceUsd(): Promise<number> {
+    if (this.options.COLLATERAL_TOKEN === "base") {
+      return this.getBaseAssetPriceUsd();
+    } else if (this.options.LENDING_TOKEN === "quote") {
+      return this.getQuoteAssetPriceUsd();
+    }
+    throw new Error("Other type of asset are not implemented");
   }
 
   async getQuoteAssetPriceUsd(): Promise<number> {

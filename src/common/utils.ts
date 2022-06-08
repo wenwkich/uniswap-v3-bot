@@ -24,4 +24,11 @@ export const getAssetAmount = (amountUsd: number, priceInUsd: number) => {
   return amountUsd / priceInUsd;
 };
 
+export const getAssetAmountBn = (
+  amountUsd: BigNumber,
+  priceInUsd: BigNumber
+) => {
+  return amountUsd.div(priceInUsd);
+};
+
 export const MAX_UINT128 = BigNumber.from(2).pow(128).sub(1);

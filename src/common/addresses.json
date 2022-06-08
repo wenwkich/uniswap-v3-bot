@@ -4,13 +4,15 @@
     "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
     "NonfungiblePositionManager": "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
     "SwapRouter02": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
-    "AavePool": ""
+    "AavePool": "",
+    "AaveOracle": ""
   },
   "polygon": {
     "USDC": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
     "WETH": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
     "NonfungiblePositionManager": "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
     "SwapRouter02": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
-    "AavePool": "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
+    "AavePool": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    "AaveOracle": "0xb023e699f5a33916ea823a16485e259257ca8bd1"
   }
 }
