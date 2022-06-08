@@ -13,7 +13,7 @@ import { LoggerService } from "../log";
 import path from "path";
 import fs from "fs";
 import { BotServiceOptions } from "../common/interfaces";
-import { erc20ABI } from "wagmi";
+import erc20ABI from "erc-20-abi";
 import COINGECKO_IDS from "../common/coingecko_ids.json";
 import ADDRESSES from "../common/addresses.json";
 import { NETWORKS } from "../common/network";
