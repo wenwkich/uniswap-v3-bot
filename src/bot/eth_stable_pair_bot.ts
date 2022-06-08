@@ -461,7 +461,7 @@ export class EthStablePairBotService {
       from: address(this.getWallet()),
       data: calldata,
       value: value,
-      gasLimit: 1000000,
+      gasLimit: 210000,
       gasPrice: await this.getGasPrice(),
     });
   }
