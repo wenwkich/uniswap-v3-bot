@@ -13,6 +13,7 @@ import {
   balanceOf,
   getAssetAmount,
   getAssetAmountBn,
+  MAX_UINT128,
   parseGwei,
   sleep,
 } from "../common/utils";
@@ -25,7 +26,7 @@ import COINGECKO_IDS from "../common/coingecko_ids.json";
 import ADDRESSES from "../common/addresses.json";
 import { NETWORKS } from "../common/network";
 import _ from "lodash";
-import { formatUnits, hexZeroPad, parseUnits } from "ethers/lib/utils";
+import { formatUnits, hexlify, hexZeroPad, parseUnits } from "ethers/lib/utils";
 import { abi as uniPoolAbi } from "@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json";
 import { abi as nonFungiblePositionManagerAbi } from "@uniswap/v3-periphery/artifacts/contracts/interfaces/INonfungiblePositionManager.sol/INonfungiblePositionManager.json";
 import { abi as aavePoolAbi } from "@aave/core-v3/artifacts/contracts/interfaces/IPool.sol/IPool.json";
@@ -230,23 +231,38 @@ export class EthStablePairBotService {
           outOfRange = await this.checkOutOfRange(position);
         }
 
-        if (
-          !position ||
-          adjustLTVRatio ||
-          (lastProcessedTimeOver && outOfRange)
-        ) {
-          // this.getLogger().info("start to rebalance");
-          // await this.rebalance(position, nftId);
+        if (!position) {
+          this.getLogger().info("cannot find a proper position, start over");
+        }
 
-          // save the snapshot
-          this.lastProcessedTime = moment();
-
-          fs.writeFileSync(
-            `${process.cwd()}/snapshot`,
-            this.lastProcessedTime.toISOString(),
-            { flag: "w+" }
+        if (adjustLTVRatio) {
+          this.getLogger().info(
+            "need to adjust loan ratio, force to rebalance"
           );
         }
+
+        if (lastProcessedTimeOver && outOfRange) {
+          this.getLogger().info("the position is out of range");
+        }
+        // if (
+        //   !position ||
+        //   adjustLTVRatio ||
+        //   (lastProcessedTimeOver && outOfRange)
+        // ) {
+        //   this.getLogger().info("start to rebalance");
+        //   await this.rebalance(position, nftId);
+
+        //   // save the snapshot
+        //   this.lastProcessedTime = moment();
+
+        //   fs.writeFileSync(
+        //     `${process.cwd()}/snapshot`,
+        //     this.lastProcessedTime.toISOString(),
+        //     { flag: "w+" }
+        //   );
+        // } else {
+        //   this.getLogger().info("condition not satisfied, skipping");
+        // }
 
         sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
       } catch (err: any) {
@@ -423,21 +439,20 @@ export class EthStablePairBotService {
    * get last position
    */
   async getLastPosition(): Promise<PositionWithNftId> {
-    const logs = await this.getProvider().getLogs({
-      address: ADDRESSES[this.getNetwork()].NonfungiblePositionManager,
-      topics: [
-        utils.id("Transfer(address,address,uint256)"),
-        hexZeroPad(ethers.constants.AddressZero, 32),
-        hexZeroPad(await address(this.getWallet()), 32),
-      ],
-    });
-    const lastLog = logs.slice(-1)[0];
-    console.log(logs);
-    if (lastLog === undefined) return { position: undefined, nftId: undefined };
-    const [, , tokenId] = lastLog.topics;
+    const manager = await this.getNonFungiblePositionManager();
+
+    const balance = await manager.balanceOf(await address(this.getWallet()));
+    if (balance === 0) return { position: undefined, nftId: undefined };
+
+    const tokenId = await manager.tokenOfOwnerByIndex(
+      await address(this.getWallet()),
+      0
+    );
     const nftId = +formatUnits(tokenId, 0);
     const position = await this.getPosition(nftId);
+
     if (!position) return { position: undefined, nftId };
+
     return {
       position,
       nftId,
@@ -463,6 +478,23 @@ export class EthStablePairBotService {
     return position.tickLower < lowerRange || position.tickUpper > higherRange;
   }
 
+  /**
+   * get the fee collected
+   */
+  async getFees(nftId: number) {
+    const positionManager = this.getNonFungiblePositionManager();
+    const { amount0, amount1 } = await positionManager.callStatic.collect(
+      {
+        tokenId: hexlify(nftId),
+        recipient: address(this.getWallet()), // some tokens might fail if transferred to address(0)
+        amount0Max: MAX_UINT128,
+        amount1Max: MAX_UINT128,
+      },
+      { from: address(this.getWallet()) } // need to simulate the call as the owner
+    );
+    return { amount0, amount1 };
+  }
+
   /********* UNISWAP MUTATION FUNCTION *********/
 
   /**
@@ -474,12 +506,15 @@ export class EthStablePairBotService {
     const BASE = this.getBaseAssetToken();
     const QUOTE = this.getQuoteAssetToken();
 
+    const { amount0, amount1 } = await this.getFees(nftId);
+    this.getLogger().info(`getting fee0: ${amount0}, fee1: ${amount1}`);
     const { calldata, value } = NonfungiblePositionManager.removeCallParameters(
       position,
       {
-        tokenId: nftId,
-        liquidityPercentage: new Percent(100),
-        slippageTolerance: new Percent(50, 10_000),
+        tokenId: hexlify(nftId),
+        // remove all liquidity
+        liquidityPercentage: new Percent(1),
+        slippageTolerance: new Percent(10, 1000),
         deadline:
           (
             await this.getWallet().provider.getBlock(
@@ -487,11 +522,14 @@ export class EthStablePairBotService {
             )
           ).timestamp + 1200,
         collectOptions: {
-          // since we are not dealing with native token,
-          // it should be safe here to set the expected
-          // amount to 0
-          expectedCurrencyOwed0: CurrencyAmount.fromRawAmount(BASE, "0"),
-          expectedCurrencyOwed1: CurrencyAmount.fromRawAmount(QUOTE, "0"),
+          expectedCurrencyOwed0: CurrencyAmount.fromRawAmount(
+            BASE,
+            amount0.toString()
+          ),
+          expectedCurrencyOwed1: CurrencyAmount.fromRawAmount(
+            QUOTE,
+            amount1.toString()
+          ),
           recipient: await address(this.getWallet()),
         },
       }
@@ -503,7 +541,7 @@ export class EthStablePairBotService {
         from: await address(this.getWallet()),
         data: calldata,
         value: value,
-        gasLimit: 210000,
+        gasLimit: 330000,
         gasPrice: await this.getGasPrice(),
       })
     );
@@ -713,6 +751,8 @@ export class EthStablePairBotService {
     );
 
     this.getLogger().info(`repaying ${balanceBase.toString()} amount of token`);
+
+    if (balanceBase.lte(0)) return;
     await this.waitForTransaction(
       await aavePool.repay(
         // asset address
