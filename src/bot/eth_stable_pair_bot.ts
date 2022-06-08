@@ -97,6 +97,8 @@ export class EthStablePairBotService {
 
   async setup(options: BotServiceOptions): Promise<void> {
     const privKey = process.env.PRIVATE_KEY;
+    this.options = options;
+
     if (!privKey) {
       throw Error("no PRIVATE_KEY is provided");
     }
@@ -109,7 +111,6 @@ export class EthStablePairBotService {
       this.getChainId()
     );
     this.wallet = new Wallet(privKey, this.provider);
-    this.options = options;
 
     // fetch the last processed time from cwd
     const snapshot = fs.readFileSync(
