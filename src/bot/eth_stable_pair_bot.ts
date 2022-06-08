@@ -452,7 +452,7 @@ export class EthStablePairBotService {
     amountFrom: BigNumber
   ) {
     const router = new AlphaRouter({
-      chainId: 1,
+      chainId: this.getChainId(),
       provider: this.getProvider(),
     });
 
