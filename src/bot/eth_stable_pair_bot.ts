@@ -726,7 +726,8 @@ export class EthStablePairBotService {
         // variable mode
         2,
         0,
-        address(this.getWallet())
+        address(this.getWallet()),
+        { gasPrice: await this.getGasPrice() }
       )
     ).wait();
   }
