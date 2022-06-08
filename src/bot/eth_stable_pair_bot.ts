@@ -113,17 +113,17 @@ export class EthStablePairBotService {
     this.wallet = new Wallet(privKey, this.provider);
 
     // fetch the last processed time from cwd
-    const snapshot = fs.readFileSync(
-      `${path.basename(process.cwd())}./snapshot`,
-      {
-        flag: "w+",
-      }
-    );
+    const snapshot = fs.readFileSync(`${process.cwd()}/snapshot`, {
+      flag: "w+",
+    });
 
     if (snapshot) {
       this.lastProcessedTime = moment(snapshot.toString());
     } else {
-      this.lastProcessedTime = moment(0);
+      this.lastProcessedTime = moment().subtract(
+        this.options.MIN_REBALANCE_HOUR,
+        "hours"
+      );
     }
 
     // initialize other params
@@ -173,14 +173,14 @@ export class EthStablePairBotService {
     }
     this.quoteAssetToken = new Token(
       this.getChainId(),
-      address(this.quoteAssetContract),
+      await address(this.quoteAssetContract),
       await this.quoteAssetContract.decimals(),
       await this.quoteAssetContract.name(),
       await this.quoteAssetContract.symbol()
     );
     this.baseAssetToken = new Token(
       this.getChainId(),
-      address(this.baseAssetContract),
+      await address(this.baseAssetContract),
       await this.baseAssetContract.decimals(),
       await this.baseAssetContract.name(),
       await this.baseAssetContract.symbol()
@@ -195,7 +195,8 @@ export class EthStablePairBotService {
     while (true) {
       try {
         const gasPrice = await this.getGasPrice();
-        if (parseGwei(this.options.MAX_GAS_PRICE_GWEI).gt(gasPrice)) {
+        this.getLogger().info(`current gas price: ${gasPrice.toString()}`);
+        if (parseGwei(this.options.MAX_GAS_PRICE_GWEI).lt(gasPrice)) {
           this.getLogger().warn("Gas price exeeds limit");
           sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
           continue;
@@ -204,7 +205,7 @@ export class EthStablePairBotService {
         // will force rebalance if the LTV ratio standard is met
         let adjustLTVRatio = await this.checkLTVBelowMinimum();
 
-        if (adjustLTVRatio) {
+        if (!adjustLTVRatio) {
           adjustLTVRatio = await this.checkLTVAboveMaximum();
         }
 
@@ -212,7 +213,7 @@ export class EthStablePairBotService {
         const lastProcessedTimeOver =
           moment()
             .subtract(this.options.MIN_REBALANCE_HOUR, "hours")
-            .diff(this.lastProcessedTime) > 0;
+            .diff(this.lastProcessedTime) >= 0;
 
         let outOfRange = false;
         const { position, nftId } = await this.getLastPosition();
@@ -223,16 +224,16 @@ export class EthStablePairBotService {
         if (adjustLTVRatio || (lastProcessedTimeOver && outOfRange)) {
           this.getLogger().info("start to rebalance");
           await this.rebalance(position, nftId);
+
+          // save the snapshot
+          this.lastProcessedTime = moment();
+
+          fs.writeFileSync(
+            `${process.cwd()}/snapshot`,
+            this.lastProcessedTime.toISOString(),
+            { flag: "w+" }
+          );
         }
-
-        // save the snapshot
-        this.lastProcessedTime = moment();
-
-        fs.writeFileSync(
-          `${path.basename(process.cwd())}./snapshot`,
-          this.lastProcessedTime.toISOString(),
-          { flag: "w+" }
-        );
       } catch (err: any) {
         this.getLogger().error(err);
       }
@@ -268,6 +269,9 @@ export class EthStablePairBotService {
       await this.repayLoan();
 
       // swap remaining profit to stablecoin
+      this.getLogger().info(
+        "swap the remaining quote base asset to collateral asset"
+      );
       await this.attemptToSwapAll(
         this.getQuoteAssetContract(),
         this.getCollateralAssetContract(),
@@ -278,13 +282,15 @@ export class EthStablePairBotService {
     }
 
     // open new loan
+    this.getLogger().info("open new loan");
     await this.openNewLoan();
 
     // open new uniswap v3 position
+    this.getLogger().info("open new v3 position");
     await this.openNewUniV3Position();
   }
 
-  /********* STATUS CHECK RELATED FUNCTION *********/
+  /********* STATUS CHECK FUNCTION *********/
 
   async getUserAccountData(): Promise<UserAccount> {
     const aavePool = this.getAavePoolContract();
@@ -309,7 +315,9 @@ export class EthStablePairBotService {
    */
   async checkLTVBelowMinimum(): Promise<boolean> {
     const { ltv } = await this.getUserAccountData();
-    return ltv.toNumber() / 100 < this.options.MIN_LTV_RATIO;
+    const below = ltv.toNumber() / 100 < this.options.MIN_LTV_RATIO;
+    this.getLogger().info(`current LTV: ${ltv}, below: ${below}`);
+    return below;
   }
 
   /**
@@ -317,7 +325,9 @@ export class EthStablePairBotService {
    */
   async checkLTVAboveMaximum(): Promise<boolean> {
     const { ltv } = await this.getUserAccountData();
-    return ltv.toNumber() / 100 > this.options.MAX_LTV_RATIO;
+    const above = ltv.toNumber() / 100 > this.options.MAX_LTV_RATIO;
+    this.getLogger().info(`current LTV: ${ltv}, above: ${above}`);
+    return above;
   }
 
   async getPoolImmutables() {
@@ -427,7 +437,7 @@ export class EthStablePairBotService {
     return position.tickLower < lowerRange || position.tickUpper > higherRange;
   }
 
-  /********* UNISWAP RELATED FUNCTION *********/
+  /********* UNISWAP MUTATION FUNCTION *********/
 
   /**
    * exit an old uniswap v3 position
@@ -461,14 +471,16 @@ export class EthStablePairBotService {
       }
     );
 
-    this.getWallet().sendTransaction({
-      to: address(this.getNonFungiblePositionManager()),
-      from: address(this.getWallet()),
-      data: calldata,
-      value: value,
-      gasLimit: 210000,
-      gasPrice: await this.getGasPrice(),
-    });
+    await (
+      await this.getWallet().sendTransaction({
+        to: address(this.getNonFungiblePositionManager()),
+        from: address(this.getWallet()),
+        data: calldata,
+        value: value,
+        gasLimit: 210000,
+        gasPrice: await this.getGasPrice(),
+      })
+    ).wait();
   }
 
   /**
@@ -549,7 +561,7 @@ export class EthStablePairBotService {
         gasPrice: BigNumber.from(route.gasPriceWei),
       };
 
-      await this.getWallet().sendTransaction(transaction);
+      await (await this.getWallet().sendTransaction(transaction)).wait();
     } else {
       throw new Error("Failed to execute alpha router call");
     }
@@ -628,7 +640,7 @@ export class EthStablePairBotService {
         gasPrice: BigNumber.from(route.gasPriceWei),
       };
 
-      await this.getWallet().sendTransaction(transaction);
+      await (await this.getWallet().sendTransaction(transaction)).wait();
     } else {
       throw new Error(
         "Failed to execute alpha router call, status: " +
@@ -637,7 +649,7 @@ export class EthStablePairBotService {
     }
   }
 
-  /********* AAVE RELATED FUNCTION *********/
+  /********* AAVE MUTATION FUNCTION *********/
   async repayLoan() {
     const aavePool = await this.getAavePoolContract();
 
@@ -650,14 +662,17 @@ export class EthStablePairBotService {
       this.getWallet()
     );
 
-    await aavePool.repay(
-      // asset address
-      address(this.getLendingAssetContract()),
-      balanceBase,
-      // interest mode, using variable one
-      2,
-      address(this.getWallet())
-    );
+    this.getLogger().info(`repaying ${balanceBase.toString()} amount of token`);
+    await (
+      await aavePool.repay(
+        // asset address
+        address(this.getLendingAssetContract()),
+        balanceBase,
+        // interest mode, using variable one
+        2,
+        address(this.getWallet())
+      )
+    ).wait();
   }
 
   async openNewLoan() {
@@ -670,12 +685,17 @@ export class EthStablePairBotService {
     );
 
     if (balanceCollateral.gt(0)) {
-      await aavePool.supply(
-        address(this.getCollateralAssetContract()),
-        balanceCollateral,
-        address(this.getWallet()),
-        0
+      this.getLogger().info(
+        `depositing ${balanceCollateral.toString()} amount of token`
       );
+      await (
+        await aavePool.supply(
+          address(this.getCollateralAssetContract()),
+          balanceCollateral,
+          address(this.getWallet()),
+          0
+        )
+      ).wait();
     }
 
     // open a new loan
@@ -686,14 +706,17 @@ export class EthStablePairBotService {
         address(this.getLendingAssetContract())
       )
     );
-    await aavePool.borrow(
-      address(this.getLendingAssetContract()),
-      parseUnits(loanAmount.toString(), this.getLendingAssetDecimals()),
-      // variable mode
-      2,
-      0,
-      address(this.getWallet())
-    );
+    this.getLogger().info(`borrowing ${loanAmount.toString()} amount of token`);
+    await (
+      await aavePool.borrow(
+        address(this.getLendingAssetContract()),
+        parseUnits(loanAmount.toString(), this.getLendingAssetDecimals()),
+        // variable mode
+        2,
+        0,
+        address(this.getWallet())
+      )
+    ).wait();
   }
 
   getPoolContract(): ethers.Contract {
@@ -807,7 +830,7 @@ export class EthStablePairBotService {
   }
 
   async getGasPrice(): Promise<BigNumber> {
-    return this.getWallet().getGasPrice();
+    return this.getProvider().getGasPrice();
   }
 
   getNetwork() {
