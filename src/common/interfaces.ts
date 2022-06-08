@@ -20,9 +20,9 @@ export interface BotServiceOptions {
   MIN_REBALANCE_HOUR: number;
   // base token is token0 or token1
   BASE_TOKEN: 0 | 1;
-  // base token name, used to look up address or coingecko id
+  // base token name, the key used to look up address or coingecko id
   BASE_TOKEN_NAME: string;
-  // quote token name, used to look up address or coingecko id
+  // quote token name, the key used to look up address or coingecko id
   QUOTE_TOKEN_NAME: string;
   // number of sec to wait before check price in the next step
   PRICE_CHECK_INTERVAL_SEC: number;
