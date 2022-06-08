@@ -230,6 +230,54 @@ export class EthStablePairBotService {
   }
 
   /**
+   * main logic to rebalance
+   * @param oldPosition
+   * @param nftId
+   */
+  async rebalance(
+    oldPosition: Position | undefined,
+    nftId: number | undefined
+  ) {
+    if (oldPosition !== undefined && nftId !== undefined) {
+      // exit old positions
+      await this.exitPosition(oldPosition, nftId);
+
+      // swap the remaining base asset to quote asset first
+      await this.attemptToSwapAll(
+        this.getBaseAssetContract(),
+        this.getQuoteAssetContract(),
+        this.getBaseAssetDecimals(),
+        0,
+        await this.getBaseAssetPriceUsd()
+      );
+
+      // repay loan
+      const balanceBase = await balanceOf(
+        this.getBaseAssetContract(),
+        this.getWallet()
+      );
+      await this.repayLoan(balanceBase);
+
+      // swap remaining profit to stablecoin
+      await this.attemptToSwapAll(
+        this.getQuoteAssetContract(),
+        this.getStablecoinContract(),
+        this.getQuoteAssetDecimals(),
+        0,
+        await this.getQuoteAssetPriceUsd()
+      );
+    }
+
+    // open new loan
+    await this.openNewLoan();
+
+    // open new uniswap v3 position
+    await this.openNewUniV3Position();
+  }
+
+  /********* STATUS CHECK RELATED FUNCTION *********/
+
+  /**
    * check if current LTV ratio is under minimum
    */
   async checkLTVBelowMinimum(): Promise<boolean> {
@@ -352,51 +400,6 @@ export class EthStablePairBotService {
     return position.tickLower < lowerRange || position.tickUpper > higherRange;
   }
 
-  /**
-   * main logic to rebalance
-   * @param oldPosition
-   * @param nftId
-   */
-  async rebalance(
-    oldPosition: Position | undefined,
-    nftId: number | undefined
-  ) {
-    if (oldPosition !== undefined && nftId !== undefined) {
-      // exit old positions
-      await this.exitPosition(oldPosition, nftId);
-
-      // swap the remaining base asset to quote asset first
-      await this.attemptToSwapAll(
-        this.getBaseAssetContract(),
-        this.getQuoteAssetContract(),
-        this.getBaseAssetDecimals(),
-        0,
-        await this.getBaseAssetPriceUsd()
-      );
-
-      // repay loan
-      const balanceBase = await balanceOf(
-        this.getBaseAssetContract(),
-        this.getWallet()
-      );
-      await this.repayLoan(balanceBase);
-
-      // swap remaining profit to stablecoin
-      await this.attemptToSwapAll(
-        this.getQuoteAssetContract(),
-        this.getStablecoinContract(),
-        this.getQuoteAssetDecimals(),
-        0,
-        await this.getQuoteAssetPriceUsd()
-      );
-    }
-
-    // open new loan
-    await this.openNewLoan();
-
-    // open new uniswap v3 position
-    await this.openNewUniV3Position();
-  }
   /********* UNISWAP RELATED FUNCTION *********/
 
   /**
