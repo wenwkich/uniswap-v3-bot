@@ -221,6 +221,7 @@ export class EthStablePairBotService {
         }
 
         if (adjustLTVRatio || (lastProcessedTimeOver && outOfRange)) {
+          this.getLogger().info("start to rebalance");
           await this.rebalance(position, nftId);
         }
 
@@ -249,9 +250,11 @@ export class EthStablePairBotService {
   ) {
     if (oldPosition !== undefined && nftId !== undefined) {
       // exit old positions
+      this.getLogger().info("exit position");
       await this.exitPosition(oldPosition, nftId);
 
       // swap the remaining base asset to quote asset first
+      this.getLogger().info("swap the remaining base asset to quote asset");
       await this.attemptToSwapAll(
         this.getBaseAssetContract(),
         this.getQuoteAssetContract(),
@@ -261,6 +264,7 @@ export class EthStablePairBotService {
       );
 
       // repay loan
+      this.getLogger().info("repay loan");
       await this.repayLoan();
 
       // swap remaining profit to stablecoin
@@ -483,6 +487,7 @@ export class EthStablePairBotService {
     priceUsd: number
   ) {
     const balanceFrom = await balanceOf(fromAssetContract, this.getWallet());
+    this.getLogger().info(`balance original: ${balanceFrom.toString()}`);
     if (
       balanceFrom.gt(
         parseUnits("" + getAssetAmount(limitUsd, priceUsd), fromAssetDecimals)
@@ -635,6 +640,10 @@ export class EthStablePairBotService {
   /********* AAVE RELATED FUNCTION *********/
   async repayLoan() {
     const aavePool = await this.getAavePoolContract();
+
+    const { totalDebtBase } = await this.getUserAccountData();
+
+    if (totalDebtBase.lt(0)) return;
 
     const balanceBase = await balanceOf(
       this.getLendingAssetContract(),
