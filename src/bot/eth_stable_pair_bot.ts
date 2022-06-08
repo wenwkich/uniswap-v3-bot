@@ -1,4 +1,11 @@
-import { BigNumber, ethers, providers, utils, Wallet } from "ethers";
+import {
+  BigNumber,
+  ethers,
+  providers,
+  Transaction,
+  utils,
+  Wallet,
+} from "ethers";
 import moment, { Moment } from "moment";
 import { Inject, Service } from "typedi";
 import {
@@ -223,9 +230,13 @@ export class EthStablePairBotService {
           outOfRange = await this.checkOutOfRange(position);
         }
 
-        if (adjustLTVRatio || (lastProcessedTimeOver && outOfRange)) {
-          this.getLogger().info("start to rebalance");
-          await this.rebalance(position, nftId);
+        if (
+          !position ||
+          adjustLTVRatio ||
+          (lastProcessedTimeOver && outOfRange)
+        ) {
+          // this.getLogger().info("start to rebalance");
+          // await this.rebalance(position, nftId);
 
           // save the snapshot
           this.lastProcessedTime = moment();
@@ -236,6 +247,8 @@ export class EthStablePairBotService {
             { flag: "w+" }
           );
         }
+
+        sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
       } catch (err: any) {
         this.getLogger().error(err);
       }
@@ -265,23 +278,23 @@ export class EthStablePairBotService {
         0,
         await this.getBaseAssetPriceUsd()
       );
-
-      // repay loan
-      this.getLogger().info("repay loan");
-      await this.repayLoan();
-
-      // swap remaining profit to stablecoin
-      this.getLogger().info(
-        "swap the remaining quote base asset to collateral asset"
-      );
-      await this.attemptToSwapAll(
-        this.getQuoteAssetContract(),
-        this.getCollateralAssetContract(),
-        this.getQuoteAssetDecimals(),
-        0,
-        await this.getQuoteAssetPriceUsd()
-      );
     }
+
+    // repay loan
+    this.getLogger().info("repay loan");
+    await this.repayLoan();
+
+    // swap remaining profit to stablecoin
+    this.getLogger().info(
+      "swap the remaining quote base asset to collateral asset"
+    );
+    await this.attemptToSwapAll(
+      this.getQuoteAssetContract(),
+      this.getCollateralAssetContract(),
+      this.getQuoteAssetDecimals(),
+      0,
+      await this.getQuoteAssetPriceUsd()
+    );
 
     // open new loan
     this.getLogger().info("open new loan");
@@ -296,7 +309,9 @@ export class EthStablePairBotService {
 
   async getUserAccountData(): Promise<UserAccount> {
     const aavePool = this.getAavePoolContract();
-    const data = await aavePool.getUserAccountData(address(this.getWallet()));
+    const data = await aavePool.getUserAccountData(
+      await address(this.getWallet())
+    );
     return {
       totalCollateralBase: data[0],
       totalDebtBase: data[1],
@@ -320,7 +335,9 @@ export class EthStablePairBotService {
       await this.getUserAccountData();
     const ltv = totalDebtBase.mul(10000).div(totalCollateralBase);
     const below = ltv.toNumber() / 10000 < this.options.MIN_LTV_RATIO;
-    this.getLogger().info(`current LTV: ${ltv}, below: ${below}`);
+    this.getLogger().info(
+      `current LTV: ${ltv.toNumber() / 10000}, below: ${below}`
+    );
     return below;
   }
 
@@ -332,7 +349,9 @@ export class EthStablePairBotService {
       await this.getUserAccountData();
     const ltv = totalDebtBase.mul(10000).div(totalCollateralBase);
     const above = ltv.toNumber() / 10000 > this.options.MAX_LTV_RATIO;
-    this.getLogger().info(`current LTV: ${ltv}, above: ${above}`);
+    this.getLogger().info(
+      `current LTV: ${ltv.toNumber() / 10000}, above: ${above}`
+    );
     return above;
   }
 
@@ -409,10 +428,11 @@ export class EthStablePairBotService {
       topics: [
         utils.id("Transfer(address,address,uint256)"),
         hexZeroPad(ethers.constants.AddressZero, 32),
-        hexZeroPad(address(this.getWallet()), 32),
+        hexZeroPad(await address(this.getWallet()), 32),
       ],
     });
     const lastLog = logs.slice(-1)[0];
+    console.log(logs);
     if (lastLog === undefined) return { position: undefined, nftId: undefined };
     const [, , tokenId] = lastLog.topics;
     const nftId = +formatUnits(tokenId, 0);
@@ -465,28 +485,28 @@ export class EthStablePairBotService {
             await this.getWallet().provider.getBlock(
               this.getWallet().provider.getBlockNumber()
             )
-          ).timestamp + 200,
+          ).timestamp + 1200,
         collectOptions: {
           // since we are not dealing with native token,
           // it should be safe here to set the expected
           // amount to 0
           expectedCurrencyOwed0: CurrencyAmount.fromRawAmount(BASE, "0"),
           expectedCurrencyOwed1: CurrencyAmount.fromRawAmount(QUOTE, "0"),
-          recipient: address(this.getWallet()),
+          recipient: await address(this.getWallet()),
         },
       }
     );
 
-    await (
+    await this.waitForTransaction(
       await this.getWallet().sendTransaction({
-        to: address(this.getNonFungiblePositionManager()),
-        from: address(this.getWallet()),
+        to: await address(this.getNonFungiblePositionManager()),
+        from: await address(this.getWallet()),
         data: calldata,
         value: value,
         gasLimit: 210000,
         gasPrice: await this.getGasPrice(),
       })
-    ).wait();
+    );
   }
 
   /**
@@ -533,7 +553,7 @@ export class EthStablePairBotService {
 
     const fromAssetToken = new Token(
       this.getChainId(),
-      address(fromAssetContract),
+      await address(fromAssetContract),
       await fromAssetContract.decimals(),
       await fromAssetContract.name(),
       await fromAssetContract.symbol()
@@ -541,7 +561,7 @@ export class EthStablePairBotService {
 
     const toAssetToken = new Token(
       this.getChainId(),
-      address(toAssetContract),
+      await address(toAssetContract),
       await toAssetContract.decimals(),
       await toAssetContract.name(),
       await toAssetContract.symbol()
@@ -552,9 +572,14 @@ export class EthStablePairBotService {
       toAssetToken,
       TradeType.EXACT_INPUT,
       {
-        recipient: address(this.getWallet()),
+        recipient: await address(this.getWallet()),
         slippageTolerance: new Percent(5, 1000),
-        deadline: Math.floor(Date.now() / 1000 + 1800),
+        deadline:
+          (
+            await this.getWallet().provider.getBlock(
+              this.getWallet().provider.getBlockNumber()
+            )
+          ).timestamp + 1200,
       }
     );
 
@@ -563,11 +588,13 @@ export class EthStablePairBotService {
         data: route.methodParameters?.calldata,
         to: ADDRESSES[this.getNetwork()].SwapRouter02,
         value: BigNumber.from(route.methodParameters?.value),
-        from: address(this.getWallet()),
+        from: await address(this.getWallet()),
         gasPrice: await this.getGasPrice(),
       };
 
-      await (await this.getWallet().sendTransaction(transaction)).wait();
+      await this.waitForTransaction(
+        await this.getWallet().sendTransaction(transaction)
+      );
     } else {
       throw new Error("Failed to execute alpha router call");
     }
@@ -575,21 +602,31 @@ export class EthStablePairBotService {
 
   async openNewUniV3Position() {
     // atomic swap and add liquidity
-    const balanceFrom = await balanceOf(
+    const balanceBase = await balanceOf(
+      this.getBaseAssetContract(),
+      this.getWallet()
+    );
+    const balanceQuote = await balanceOf(
       this.getQuoteAssetContract(),
       this.getWallet()
     );
+    this.getLogger().info(`token0 balance: ${balanceBase}`);
+    this.getLogger().info(`token1 balance: ${balanceQuote}`);
 
     const BASE = this.getBaseAssetToken();
     const QUOTE = this.getQuoteAssetToken();
 
-    const token0Balance = CurrencyAmount.fromRawAmount(BASE, "0");
+    const token0Balance = CurrencyAmount.fromRawAmount(
+      BASE,
+      balanceBase.toString()
+    );
     const token1Balance = CurrencyAmount.fromRawAmount(
       QUOTE,
-      balanceFrom.toString()
+      balanceQuote.toString()
     );
     const immutables = await this.getPoolImmutables();
     const state = await this.getPoolState();
+
     const pool = new Pool(
       BASE,
       QUOTE,
@@ -625,13 +662,18 @@ export class EthStablePairBotService {
       },
       {
         swapOptions: {
-          recipient: address(this.getWallet()),
+          recipient: await address(this.getWallet()),
           // 0.5% slippage
           slippageTolerance: new Percent(5, 1000),
-          deadline: 200,
+          deadline:
+            (
+              await this.getWallet().provider.getBlock(
+                this.getWallet().provider.getBlockNumber()
+              )
+            ).timestamp + 1200,
         },
         addLiquidityOptions: {
-          recipient: address(this.getWallet()),
+          recipient: await address(this.getWallet()),
         },
       }
     );
@@ -642,11 +684,13 @@ export class EthStablePairBotService {
         data: route.methodParameters?.calldata,
         to: ADDRESSES[this.getNetwork()].SwapRouter02,
         value: BigNumber.from(route.methodParameters?.value),
-        from: address(this.getWallet()),
+        from: await address(this.getWallet()),
         gasPrice: await this.getGasPrice(),
       };
 
-      await (await this.getWallet().sendTransaction(transaction)).wait();
+      await this.waitForTransaction(
+        await this.getWallet().sendTransaction(transaction)
+      );
     } else {
       throw new Error(
         "Failed to execute alpha router call, status: " +
@@ -669,17 +713,17 @@ export class EthStablePairBotService {
     );
 
     this.getLogger().info(`repaying ${balanceBase.toString()} amount of token`);
-    await (
+    await this.waitForTransaction(
       await aavePool.repay(
         // asset address
-        address(this.getLendingAssetContract()),
+        await address(this.getLendingAssetContract()),
         balanceBase,
         // interest mode, using variable one
         2,
-        address(this.getWallet()),
+        await address(this.getWallet()),
         { gasPrice: await this.getGasPrice() }
       )
-    ).wait();
+    );
   }
 
   async openNewLoan() {
@@ -695,15 +739,15 @@ export class EthStablePairBotService {
       this.getLogger().info(
         `depositing ${balanceCollateral.toString()} amount of token`
       );
-      await (
+      await this.waitForTransaction(
         await aavePool.supply(
-          address(this.getCollateralAssetContract()),
+          await address(this.getCollateralAssetContract()),
           balanceCollateral,
-          address(this.getWallet()),
+          await address(this.getWallet()),
           0,
           { gasPrice: await this.getGasPrice() }
         )
-      ).wait();
+      );
     }
 
     // open a new loan
@@ -720,17 +764,17 @@ export class EthStablePairBotService {
     ).div(1000000);
 
     this.getLogger().info(`loan amount: ${loanAmount.toString()}`);
-    await (
+    await this.waitForTransaction(
       await aavePool.borrow(
-        address(this.getLendingAssetContract()),
+        await address(this.getLendingAssetContract()),
         loanAmount,
         // variable mode
         2,
         0,
-        address(this.getWallet()),
+        await address(this.getWallet()),
         { gasPrice: await this.getGasPrice() }
       )
-    ).wait();
+    );
   }
 
   getPoolContract(): ethers.Contract {
@@ -758,7 +802,7 @@ export class EthStablePairBotService {
   }
 
   getQuoteAssetToken(): Token {
-    return this.baseAssetToken;
+    return this.quoteAssetToken;
   }
 
   getBaseAssetContract(): ethers.Contract {
@@ -847,6 +891,18 @@ export class EthStablePairBotService {
     const oldGasPrice = await this.getProvider().getGasPrice();
     const newGasPrice = oldGasPrice.mul(2);
     return newGasPrice;
+  }
+
+  async waitForTransaction(tx: Transaction) {
+    const hash = tx.hash;
+
+    if (hash) {
+      await this.provider.waitForTransaction(
+        hash,
+        1,
+        this.options.TRANSACTION_TIMEOUT_SEC * 1000
+      );
+    }
   }
 
   getNetwork() {

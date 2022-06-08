@@ -36,4 +36,6 @@ export interface BotServiceOptions {
   COLLATERAL_TOKEN: "quote" | "base" | "stable";
   // lending token name in the lending pool
   LENDING_TOKEN: "quote" | "base" | "stable";
+  // transaction timeout in seconds
+  TRANSACTION_TIMEOUT_SEC: number;
 }
