@@ -125,7 +125,7 @@ export class EthStablePairBotService {
       flag: "w+",
     });
 
-    if (snapshot) {
+    if (snapshot.toString()) {
       this.lastProcessedTime = moment(snapshot.toString());
     } else {
       this.lastProcessedTime = moment().subtract(
@@ -713,8 +713,8 @@ export class EthStablePairBotService {
       {
         swapOptions: {
           recipient: await address(this.getWallet()),
-          // 0.5% slippage
-          slippageTolerance: new Percent(5, 1000),
+          // 1% slippage
+          slippageTolerance: new Percent(7, 1000),
           deadline:
             (
               await this.getWallet().provider.getBlock(
