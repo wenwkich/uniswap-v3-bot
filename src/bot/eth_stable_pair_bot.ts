@@ -20,6 +20,7 @@ import _ from "lodash";
 import { formatUnits, hexZeroPad, parseUnits } from "ethers/lib/utils";
 import { abi as uniPoolAbi } from "@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json";
 import { abi as nonFungiblePositionManagerAbi } from "@uniswap/v3-periphery/artifacts/contracts/interfaces/INonfungiblePositionManager.sol/INonfungiblePositionManager.json";
+import { abi as aavePoolAbi } from "@aave/core-v3/artifacts/contracts/interfaces/IPool.sol/IPool.json";
 import {
   nearestUsableTick,
   NonfungiblePositionManager,
@@ -70,6 +71,7 @@ export class EthStablePairBotService {
 
   private poolContract: ethers.Contract;
   private nonFungiblePositionManager: ethers.Contract;
+  private aavePoolContract: ethers.Contract;
 
   private quoteAssetContract: ethers.Contract;
   private quoteAssetToken: Token;
@@ -122,6 +124,11 @@ export class EthStablePairBotService {
     this.nonFungiblePositionManager = new ethers.Contract(
       ADDRESSES[this.getNetwork()].NonfungiblePositionManager,
       nonFungiblePositionManagerAbi,
+      this.getWallet()
+    );
+    this.aavePoolContract = new ethers.Contract(
+      ADDRESSES[this.getNetwork()].AavePool,
+      aavePoolAbi,
       this.getWallet()
     );
 
@@ -614,6 +621,10 @@ export class EthStablePairBotService {
 
   getNonFungiblePositionManager(): ethers.Contract {
     return this.nonFungiblePositionManager;
+  }
+
+  getAavePoolContract(): ethers.Contract {
+    return this.aavePoolContract;
   }
 
   getQuoteAssetContract(): ethers.Contract {
