@@ -25,7 +25,7 @@ import erc20ABI from "erc-20-abi";
 import COINGECKO_IDS from "../common/coingecko_ids.json";
 import ADDRESSES from "../common/addresses.json";
 import { NETWORKS } from "../common/network";
-import _ from "lodash";
+import _, { max } from "lodash";
 import { formatUnits, hexlify, hexZeroPad, parseUnits } from "ethers/lib/utils";
 import { abi as uniPoolAbi } from "@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json";
 import { abi as nonFungiblePositionManagerAbi } from "@uniswap/v3-periphery/artifacts/contracts/interfaces/INonfungiblePositionManager.sol/INonfungiblePositionManager.json";
@@ -68,8 +68,8 @@ interface State {
 }
 
 interface PositionWithNftId {
-  position?: Position;
-  nftId?: number;
+  position: Position;
+  nftId: number;
 }
 
 interface UserAccount {
@@ -226,12 +226,14 @@ export class EthStablePairBotService {
             .diff(this.lastProcessedTime) >= 0;
 
         let outOfRange = false;
-        const { position, nftId } = await this.getLastPosition();
-        if (position) {
-          outOfRange = await this.checkOutOfRange(position);
+        const positions = await this.getLastPositions();
+
+        const maxPosition = await this.getPositionWithMaxLiquidity(positions);
+        if (maxPosition) {
+          outOfRange = await this.checkOutOfRange(maxPosition.position);
         }
 
-        if (!position) {
+        if (!maxPosition) {
           this.getLogger().info("cannot find a proper position, start over");
         }
 
@@ -244,25 +246,25 @@ export class EthStablePairBotService {
         if (lastProcessedTimeOver && outOfRange) {
           this.getLogger().info("the position is out of range");
         }
-        // if (
-        //   !position ||
-        //   adjustLTVRatio ||
-        //   (lastProcessedTimeOver && outOfRange)
-        // ) {
-        //   this.getLogger().info("start to rebalance");
-        //   await this.rebalance(position, nftId);
+        if (
+          !maxPosition ||
+          adjustLTVRatio ||
+          (lastProcessedTimeOver && outOfRange)
+        ) {
+          this.getLogger().info("start to rebalance");
+          await this.rebalance(positions);
 
-        //   // save the snapshot
-        //   this.lastProcessedTime = moment();
+          // save the snapshot
+          this.lastProcessedTime = moment();
 
-        //   fs.writeFileSync(
-        //     `${process.cwd()}/snapshot`,
-        //     this.lastProcessedTime.toISOString(),
-        //     { flag: "w+" }
-        //   );
-        // } else {
-        //   this.getLogger().info("condition not satisfied, skipping");
-        // }
+          fs.writeFileSync(
+            `${process.cwd()}/snapshot`,
+            this.lastProcessedTime.toISOString(),
+            { flag: "w+" }
+          );
+        } else {
+          this.getLogger().info("condition not satisfied, skipping");
+        }
 
         sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
       } catch (err: any) {
@@ -276,25 +278,27 @@ export class EthStablePairBotService {
    * @param oldPosition
    * @param nftId
    */
-  async rebalance(
-    oldPosition: Position | undefined,
-    nftId: number | undefined
-  ) {
-    if (oldPosition !== undefined && nftId !== undefined) {
-      // exit old positions
-      this.getLogger().info("exit position");
-      await this.exitPosition(oldPosition, nftId);
+  async rebalance(oldPositions: PositionWithNftId[]) {
+    // exit old positions
+    this.getLogger().info("exit all old positions");
+    await Promise.all(
+      _.map(oldPositions, async (pos) => {
+        const { position, nftId } = pos;
+        if ((position.liquidity as any) > 0) {
+          await this.exitPosition(position, nftId);
+        }
+      })
+    );
 
-      // swap the remaining base asset to quote asset first
-      this.getLogger().info("swap the remaining base asset to quote asset");
-      await this.attemptToSwapAll(
-        this.getBaseAssetContract(),
-        this.getQuoteAssetContract(),
-        this.getBaseAssetDecimals(),
-        0,
-        await this.getBaseAssetPriceUsd()
-      );
-    }
+    // swap the remaining base asset to quote asset first
+    this.getLogger().info("swap the remaining base asset to quote asset");
+    await this.attemptToSwapAll(
+      this.getBaseAssetContract(),
+      this.getQuoteAssetContract(),
+      this.getBaseAssetDecimals(),
+      0,
+      await this.getBaseAssetPriceUsd()
+    );
 
     // repay loan
     this.getLogger().info("repay loan");
@@ -438,25 +442,41 @@ export class EthStablePairBotService {
   /**
    * get last position
    */
-  async getLastPosition(): Promise<PositionWithNftId> {
+  async getLastPositions(): Promise<PositionWithNftId[]> {
     const manager = await this.getNonFungiblePositionManager();
 
     const balance = await manager.balanceOf(await address(this.getWallet()));
-    if (balance === 0) return { position: undefined, nftId: undefined };
+    if (balance === 0) return [];
 
-    const tokenId = await manager.tokenOfOwnerByIndex(
-      await address(this.getWallet()),
-      0
+    return await _.reduce(
+      _.range(0, balance),
+      async (prev, curr, index) => {
+        const prevRes = await prev;
+        const tokenId = await manager.tokenOfOwnerByIndex(
+          await address(this.getWallet()),
+          curr
+        );
+        const nftId = +formatUnits(tokenId, 0);
+        const position = await this.getPosition(nftId);
+
+        if (!position) return [...prevRes];
+
+        return [
+          ...prevRes,
+          {
+            position,
+            nftId,
+          },
+        ];
+      },
+      Promise.resolve([] as PositionWithNftId[])
     );
-    const nftId = +formatUnits(tokenId, 0);
-    const position = await this.getPosition(nftId);
+  }
 
-    if (!position) return { position: undefined, nftId };
-
-    return {
-      position,
-      nftId,
-    };
+  async getPositionWithMaxLiquidity(positions: PositionWithNftId[]) {
+    return _.maxBy(positions, (pos) => {
+      return pos.position.liquidity;
+    });
   }
 
   /**
@@ -494,6 +514,7 @@ export class EthStablePairBotService {
    * @param nftId
    */
   async exitPosition(position: Position, nftId: number) {
+    this.getLogger().info(`exiting position with nftId ${nftId}`);
     const BASE = this.getBaseAssetToken();
     const QUOTE = this.getQuoteAssetToken();
 
