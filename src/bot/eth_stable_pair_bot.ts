@@ -719,6 +719,7 @@ export class EthStablePairBotService {
       this.getLendingAssetDecimals()
     ).div(1000000);
 
+    this.getLogger().info(`loan amount: ${loanAmount.toString()}`);
     await (
       await aavePool.borrow(
         address(this.getLendingAssetContract()),
