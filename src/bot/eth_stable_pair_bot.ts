@@ -195,7 +195,9 @@ export class EthStablePairBotService {
     while (true) {
       try {
         const gasPrice = await this.getGasPrice();
-        this.getLogger().info(`current gas price: ${gasPrice.toString()}`);
+        this.getLogger().info(
+          `current gas price: ${formatUnits(gasPrice, "gwei")}`
+        );
         if (parseGwei(this.options.MAX_GAS_PRICE_GWEI).lt(gasPrice)) {
           this.getLogger().warn("Gas price exeeds limit");
           sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
@@ -314,8 +316,10 @@ export class EthStablePairBotService {
    * check if current LTV ratio is under minimum
    */
   async checkLTVBelowMinimum(): Promise<boolean> {
-    const { ltv } = await this.getUserAccountData();
-    const below = ltv.toNumber() / 100 < this.options.MIN_LTV_RATIO;
+    const { totalCollateralBase, totalDebtBase } =
+      await this.getUserAccountData();
+    const ltv = totalDebtBase.mul(10000).div(totalCollateralBase);
+    const below = ltv.toNumber() / 10000 < this.options.MIN_LTV_RATIO;
     this.getLogger().info(`current LTV: ${ltv}, below: ${below}`);
     return below;
   }
@@ -324,8 +328,10 @@ export class EthStablePairBotService {
    * check if current LTV ratio is under maximum
    */
   async checkLTVAboveMaximum(): Promise<boolean> {
-    const { ltv } = await this.getUserAccountData();
-    const above = ltv.toNumber() / 100 > this.options.MAX_LTV_RATIO;
+    const { totalCollateralBase, totalDebtBase } =
+      await this.getUserAccountData();
+    const ltv = totalDebtBase.mul(10000).div(totalCollateralBase);
+    const above = ltv.toNumber() / 10000 > this.options.MAX_LTV_RATIO;
     this.getLogger().info(`current LTV: ${ltv}, above: ${above}`);
     return above;
   }
@@ -558,7 +564,7 @@ export class EthStablePairBotService {
         to: ADDRESSES[this.getNetwork()].SwapRouter02,
         value: BigNumber.from(route.methodParameters?.value),
         from: address(this.getWallet()),
-        gasPrice: BigNumber.from(route.gasPriceWei),
+        gasPrice: await this.getGasPrice(),
       };
 
       await (await this.getWallet().sendTransaction(transaction)).wait();
@@ -637,7 +643,7 @@ export class EthStablePairBotService {
         to: ADDRESSES[this.getNetwork()].SwapRouter02,
         value: BigNumber.from(route.methodParameters?.value),
         from: address(this.getWallet()),
-        gasPrice: BigNumber.from(route.gasPriceWei),
+        gasPrice: await this.getGasPrice(),
       };
 
       await (await this.getWallet().sendTransaction(transaction)).wait();
@@ -670,7 +676,8 @@ export class EthStablePairBotService {
         balanceBase,
         // interest mode, using variable one
         2,
-        address(this.getWallet())
+        address(this.getWallet()),
+        { gasPrice: await this.getGasPrice() }
       )
     ).wait();
   }
@@ -693,24 +700,29 @@ export class EthStablePairBotService {
           address(this.getCollateralAssetContract()),
           balanceCollateral,
           address(this.getWallet()),
-          0
+          0,
+          { gasPrice: await this.getGasPrice() }
         )
       ).wait();
     }
 
     // open a new loan
     const { availableBorrowsBase } = await this.getUserAccountData();
-    const loanAmount = getAssetAmountBn(
-      availableBorrowsBase,
-      await this.getAssetPriceFromAaveOracle(
-        address(this.getLendingAssetContract())
-      )
+    const price = await this.getAssetPriceFromAaveOracle(
+      await address(this.getLendingAssetContract())
     );
-    this.getLogger().info(`borrowing ${loanAmount.toString()} amount of token`);
+    const loanAmount = parseUnits(
+      getAssetAmountBn(
+        availableBorrowsBase.mul(1000000).mul(95).div(100),
+        price
+      ).toString(),
+      this.getLendingAssetDecimals()
+    ).div(1000000);
+
     await (
       await aavePool.borrow(
         address(this.getLendingAssetContract()),
-        parseUnits(loanAmount.toString(), this.getLendingAssetDecimals()),
+        loanAmount,
         // variable mode
         2,
         0,
@@ -830,7 +842,9 @@ export class EthStablePairBotService {
   }
 
   async getGasPrice(): Promise<BigNumber> {
-    return this.getProvider().getGasPrice();
+    const oldGasPrice = await this.getProvider().getGasPrice();
+    const newGasPrice = oldGasPrice.mul(2);
+    return newGasPrice;
   }
 
   getNetwork() {
