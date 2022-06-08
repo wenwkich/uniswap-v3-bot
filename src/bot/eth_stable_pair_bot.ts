@@ -345,6 +345,11 @@ export class EthStablePairBotService {
     return position.tickLower < lowerRange || position.tickUpper > higherRange;
   }
 
+  /**
+   * main logic to rebalance
+   * @param oldPosition
+   * @param nftId
+   */
   async rebalance(
     oldPosition: Position | undefined,
     nftId: number | undefined
@@ -385,7 +390,13 @@ export class EthStablePairBotService {
     // open new uniswap v3 position
     await this.openNewUniV3Position();
   }
+  /********* UNISWAP RELATED FUNCTION *********/
 
+  /**
+   * exit an old uniswap v3 position
+   * @param position
+   * @param nftId
+   */
   async exitPosition(position: Position, nftId: number) {
     const BASE = this.getBaseAssetToken();
     const QUOTE = this.getQuoteAssetToken();
@@ -446,6 +457,12 @@ export class EthStablePairBotService {
     }
   }
 
+  /**
+   * use alpha router to swap asset to another
+   * @param fromAssetContract
+   * @param toAssetContract
+   * @param amountFrom
+   */
   async swapTo(
     fromAssetContract: ethers.Contract,
     toAssetContract: ethers.Contract,
@@ -496,16 +513,6 @@ export class EthStablePairBotService {
     } else {
       throw new Error("Failed to execute alpha router call");
     }
-  }
-
-  async repayLoan(amount: BigNumber) {
-    // TODO:
-  }
-
-  async openNewLoan() {
-    // TODO:
-    // if there is new USDC, deposit
-    // open a new loan and adjust to ratio
   }
 
   async openNewUniV3Position() {
@@ -588,6 +595,17 @@ export class EthStablePairBotService {
           routeToRatioResponse.status
       );
     }
+  }
+
+  /********* AAVE RELATED FUNCTION *********/
+  async repayLoan(amount: BigNumber) {
+    // TODO:
+  }
+
+  async openNewLoan() {
+    // TODO:
+    // if there is new USDC, deposit
+    // open a new loan and adjust to ratio
   }
 
   getPoolContract(): ethers.Contract {
