@@ -206,11 +206,11 @@ export class EthStablePairBotService {
     while (true) {
       try {
         const gasPrice = await this.getGasPrice();
-        this.getLogger().info(
-          `current gas price: ${formatUnits(gasPrice, "gwei")}`
-        );
+
         if (parseGwei(this.options.MAX_GAS_PRICE_GWEI).lt(gasPrice)) {
-          this.getLogger().warn("Gas price exeeds limit");
+          this.getLogger().warn(
+            `Gas price exeeds limit: ${formatUnits(gasPrice, "gwei")}`
+          );
           sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
           continue;
         }
@@ -265,8 +265,6 @@ export class EthStablePairBotService {
             this.lastProcessedTime.toISOString(),
             { flag: "w+" }
           );
-        } else {
-          this.getLogger().info("condition not satisfied, skipping");
         }
 
         sleep(this.options.PRICE_CHECK_INTERVAL_SEC);
@@ -383,9 +381,6 @@ export class EthStablePairBotService {
       await this.getUserAccountData();
     const ltv = totalDebtBase.mul(10000).div(totalCollateralBase);
     const below = ltv.toNumber() / 10000 < this.options.MIN_LTV_RATIO;
-    this.getLogger().info(
-      `current LTV: ${ltv.toNumber() / 10000}, below: ${below}`
-    );
     return below;
   }
 
@@ -397,9 +392,6 @@ export class EthStablePairBotService {
       await this.getUserAccountData();
     const ltv = totalDebtBase.mul(10000).div(totalCollateralBase);
     const above = ltv.toNumber() / 10000 > this.options.MAX_LTV_RATIO;
-    this.getLogger().info(
-      `current LTV: ${ltv.toNumber() / 10000}, above: ${above}`
-    );
     return above;
   }
 
@@ -488,10 +480,6 @@ export class EthStablePairBotService {
         const position = await this.getPosition(nftId);
 
         if (!position) return [...prevRes];
-
-        this.getLogger().info(
-          `found position with ${position.liquidity}, tickUpper ${position.tickUpper} and tickLower ${position.tickLower}`
-        );
         return [
           ...prevRes,
           {
@@ -550,7 +538,12 @@ export class EthStablePairBotService {
     const QUOTE = this.getQuoteAssetToken();
 
     const { amount0, amount1 } = await this.getFees(nftId);
-    this.getLogger().info(`getting fee0: ${amount0}, fee1: ${amount1}`);
+    this.getLogger().info(
+      `getting fee0: ${formatUnits(
+        amount0,
+        this.getBaseAssetDecimals()
+      )}, fee1: ${formatUnits(amount1, this.getQuoteAssetDecimals())}`
+    );
     const { calldata, value } = NonfungiblePositionManager.removeCallParameters(
       position,
       {
@@ -606,7 +599,9 @@ export class EthStablePairBotService {
     priceUsd: number
   ) {
     const balanceFrom = await balanceOf(fromAssetContract, this.getWallet());
-    this.getLogger().info(`balance original: ${balanceFrom.toString()}`);
+    this.getLogger().info(
+      `balance original: ${formatUnits(balanceFrom, fromAssetDecimals)}`
+    );
     if (
       balanceFrom.gt(
         parseUnits("" + getAssetAmount(limitUsd, priceUsd), fromAssetDecimals)
@@ -692,8 +687,15 @@ export class EthStablePairBotService {
       this.getQuoteAssetContract(),
       this.getWallet()
     );
-    this.getLogger().info(`token0 balance: ${balanceBase}`);
-    this.getLogger().info(`token1 balance: ${balanceQuote}`);
+    this.getLogger().info(
+      `token0 balance: ${formatUnits(balanceBase, this.getBaseAssetDecimals())}`
+    );
+    this.getLogger().info(
+      `token1 balance: ${formatUnits(
+        balanceQuote,
+        this.getQuoteAssetDecimals()
+      )}`
+    );
 
     const BASE = this.getBaseAssetToken();
     const QUOTE = this.getQuoteAssetToken();
@@ -794,7 +796,12 @@ export class EthStablePairBotService {
       this.getWallet()
     );
 
-    this.getLogger().info(`repaying ${balanceBase.toString()} amount of token`);
+    this.getLogger().info(
+      `repaying ${formatUnits(
+        balanceBase,
+        this.getBaseAssetDecimals()
+      )} amount of token`
+    );
 
     if (balanceBase.lte(0)) return true;
     return await this.waitForTransaction(
@@ -821,7 +828,10 @@ export class EthStablePairBotService {
 
     if (balanceCollateral.gt(0)) {
       this.getLogger().info(
-        `depositing ${balanceCollateral.toString()} amount of token`
+        `depositing ${formatUnits(
+          balanceCollateral,
+          this.getCollateralAssetDecimals()
+        )} amount of token`
       );
       return await this.waitForTransaction(
         await aavePool.supply(
@@ -852,7 +862,9 @@ export class EthStablePairBotService {
       this.getLendingAssetDecimals()
     ).div(1000000);
 
-    this.getLogger().info(`loan amount: ${loanAmount.toString()}`);
+    this.getLogger().info(
+      `loan amount: ${formatUnits(loanAmount, this.getLendingAssetDecimals())}`
+    );
     return await this.waitForTransaction(
       await aavePool.borrow(
         await address(this.getLendingAssetContract()),
