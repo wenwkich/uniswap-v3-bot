@@ -100,6 +100,9 @@ export class EthStablePairBotService {
 
   private immutables: Immutables;
 
+  private openedNewPositionInLastRound = false;
+  private repaidLoanInLastRound = false;
+
   @Inject()
   private readonly loggerService: LoggerService;
 
@@ -279,50 +282,75 @@ export class EthStablePairBotService {
    * @param nftId
    */
   async rebalance(oldPositions: PositionWithNftId[]) {
+    let feeCollected = false;
     // exit old positions
     this.getLogger().info("exit all old positions");
     await Promise.all(
       _.map(oldPositions, async (pos) => {
         const { position, nftId } = pos;
         if ((position.liquidity as any) > 0) {
-          await this.exitPosition(position, nftId);
+          const success = await this.exitPosition(position, nftId);
+          if (success) feeCollected = true;
         }
       })
     );
 
-    // swap the remaining base asset to quote asset first
-    this.getLogger().info("swap the remaining base asset to quote asset");
-    await this.attemptToSwapAll(
-      this.getBaseAssetContract(),
-      this.getQuoteAssetContract(),
-      this.getBaseAssetDecimals(),
-      0,
-      await this.getBaseAssetPriceUsd()
-    );
+    if (feeCollected) {
+      // swap the remaining base asset to quote asset first
+      this.getLogger().info("swap the remaining base asset to quote asset");
+      await this.attemptToSwapAll(
+        this.getBaseAssetContract(),
+        this.getQuoteAssetContract(),
+        this.getBaseAssetDecimals(),
+        0,
+        await this.getBaseAssetPriceUsd()
+      );
+    }
 
-    // repay loan
-    this.getLogger().info("repay loan");
-    await this.repayLoan();
+    // repay loan only if the last round is complete
+    // or repay loan is not successful in the last round
+    let repaidLoan = false;
+    if (this.openedNewPositionInLastRound || !this.repaidLoanInLastRound) {
+      this.getLogger().info("repay loan");
+      repaidLoan = await this.repayLoan();
+      this.repaidLoanInLastRound = repaidLoan;
+    }
 
     // swap remaining profit to stablecoin
-    this.getLogger().info(
-      "swap the remaining quote base asset to collateral asset"
-    );
-    await this.attemptToSwapAll(
-      this.getQuoteAssetContract(),
-      this.getCollateralAssetContract(),
-      this.getQuoteAssetDecimals(),
-      0,
-      await this.getQuoteAssetPriceUsd()
-    );
+    let successfullySwappedToStable = false;
+    if (repaidLoan) {
+      this.getLogger().info(
+        "swap the remaining quote base asset to collateral asset"
+      );
+      successfullySwappedToStable = await this.attemptToSwapAll(
+        this.getQuoteAssetContract(),
+        this.getCollateralAssetContract(),
+        this.getQuoteAssetDecimals(),
+        0,
+        await this.getQuoteAssetPriceUsd()
+      );
+    }
 
-    // open new loan
-    this.getLogger().info("open new loan");
-    await this.openNewLoan();
+    // deposit more only if the remaining swapped to stable
+    let depositedMore = false;
+    if (successfullySwappedToStable) {
+      this.getLogger().info("deposit more loan");
+      depositedMore = await this.depositMore();
+    }
+
+    // open new loan only if the loan is repaid before
+    let openedNewLoan = false;
+    if (await this.checkLTVBelowMinimum()) {
+      this.getLogger().info("open new loan");
+      openedNewLoan = await this.openNewLoan();
+    }
 
     // open new uniswap v3 position
-    this.getLogger().info("open new v3 position");
-    await this.openNewUniV3Position();
+    // only if last round is not successful or opened new loan
+    if (openedNewLoan || !this.openedNewPositionInLastRound) {
+      this.getLogger().info("open new v3 position");
+      this.openedNewPositionInLastRound = await this.openNewUniV3Position();
+    }
   }
 
   /********* STATUS CHECK FUNCTION *********/
@@ -461,6 +489,9 @@ export class EthStablePairBotService {
 
         if (!position) return [...prevRes];
 
+        this.getLogger().info(
+          `found position with ${position.liquidity}, tickUpper ${position.tickUpper} and tickLower ${position.tickLower}`
+        );
         return [
           ...prevRes,
           {
@@ -547,7 +578,7 @@ export class EthStablePairBotService {
       }
     );
 
-    await this.waitForTransaction(
+    return await this.waitForTransaction(
       await this.getWallet().sendTransaction({
         to: await address(this.getNonFungiblePositionManager()),
         from: await address(this.getWallet()),
@@ -581,8 +612,9 @@ export class EthStablePairBotService {
         parseUnits("" + getAssetAmount(limitUsd, priceUsd), fromAssetDecimals)
       )
     ) {
-      await this.swapTo(fromAssetContract, toAssetContract, balanceFrom);
+      return await this.swapTo(fromAssetContract, toAssetContract, balanceFrom);
     }
+    return false;
   }
 
   /**
@@ -642,7 +674,7 @@ export class EthStablePairBotService {
         gasPrice: await this.getGasPrice(),
       };
 
-      await this.waitForTransaction(
+      return await this.waitForTransaction(
         await this.getWallet().sendTransaction(transaction)
       );
     } else {
@@ -714,7 +746,7 @@ export class EthStablePairBotService {
         swapOptions: {
           recipient: await address(this.getWallet()),
           // 1% slippage
-          slippageTolerance: new Percent(7, 1000),
+          slippageTolerance: new Percent(10, 1000),
           deadline:
             (
               await this.getWallet().provider.getBlock(
@@ -738,7 +770,7 @@ export class EthStablePairBotService {
         gasPrice: await this.getGasPrice(),
       };
 
-      await this.waitForTransaction(
+      return await this.waitForTransaction(
         await this.getWallet().sendTransaction(transaction)
       );
     } else {
@@ -755,7 +787,7 @@ export class EthStablePairBotService {
 
     const { totalDebtBase } = await this.getUserAccountData();
 
-    if (totalDebtBase.lt(0)) return;
+    if (totalDebtBase.lte(0)) return true;
 
     const balanceBase = await balanceOf(
       this.getLendingAssetContract(),
@@ -764,8 +796,8 @@ export class EthStablePairBotService {
 
     this.getLogger().info(`repaying ${balanceBase.toString()} amount of token`);
 
-    if (balanceBase.lte(0)) return;
-    await this.waitForTransaction(
+    if (balanceBase.lte(0)) return true;
+    return await this.waitForTransaction(
       await aavePool.repay(
         // asset address
         await address(this.getLendingAssetContract()),
@@ -778,7 +810,7 @@ export class EthStablePairBotService {
     );
   }
 
-  async openNewLoan() {
+  async depositMore() {
     const aavePool = await this.getAavePoolContract();
 
     // if there is new USDC, deposit
@@ -791,7 +823,7 @@ export class EthStablePairBotService {
       this.getLogger().info(
         `depositing ${balanceCollateral.toString()} amount of token`
       );
-      await this.waitForTransaction(
+      return await this.waitForTransaction(
         await aavePool.supply(
           await address(this.getCollateralAssetContract()),
           balanceCollateral,
@@ -801,6 +833,11 @@ export class EthStablePairBotService {
         )
       );
     }
+    return false;
+  }
+
+  async openNewLoan() {
+    const aavePool = await this.getAavePoolContract();
 
     // open a new loan
     const { availableBorrowsBase } = await this.getUserAccountData();
@@ -816,7 +853,7 @@ export class EthStablePairBotService {
     ).div(1000000);
 
     this.getLogger().info(`loan amount: ${loanAmount.toString()}`);
-    await this.waitForTransaction(
+    return await this.waitForTransaction(
       await aavePool.borrow(
         await address(this.getLendingAssetContract()),
         loanAmount,
@@ -949,12 +986,14 @@ export class EthStablePairBotService {
     const hash = tx.hash;
 
     if (hash) {
-      await this.provider.waitForTransaction(
+      const receipt = await this.provider.waitForTransaction(
         hash,
         1,
         this.options.TRANSACTION_TIMEOUT_SEC * 1000
       );
+      return receipt.confirmations > 0;
     }
+    return false;
   }
 
   getNetwork() {
