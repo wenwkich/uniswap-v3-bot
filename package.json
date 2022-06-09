@@ -27,6 +27,6 @@
   },
   "scripts": {
     "start": "tsc-watch",
-    "build": "tsc ."
+    "build": "tsc"
   }
 }
