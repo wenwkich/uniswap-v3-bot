@@ -2,6 +2,10 @@
 
 This is a bot that will auto rebalance on a configurable manner, only supporting USDC-ETH pair at the moment (or other stable pair)
 
+## Result
+
+** This bot doesn't work because it's hard to assure atomicity, which some of steps should be aggregated inside a smart contract **
+
 ## Risk
 
 The risk for this bot is that it is tested in production, the profitability has not been thoroughly tested
