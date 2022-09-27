@@ -4,7 +4,7 @@ This is a bot that will auto rebalance on a configurable manner, only supporting
 
 ## Result
 
-** This bot doesn't work because it's hard to assure atomicity, which some of steps should be aggregated inside a smart contract **
+**This bot doesn't work because it's hard to assure atomicity, which some of steps should be aggregated inside a smart contract**
 
 ## Risk
 
